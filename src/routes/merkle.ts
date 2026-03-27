@@ -1,7 +1,7 @@
 import { Router, Request } from 'express';
 import { PublicKey } from '@solana/web3.js';
 import { fetchMerkleTreeState } from '../solana/contract.js';
-import { getDb } from '../db/index.js';
+import { Commitment } from '../db/index.js';
 import { config } from '../config/env.js';
 import { createCache } from '../lib/cache.js';
 import { sanitizeToken, isValidCommitment } from '../lib/validators.js';
@@ -39,39 +39,6 @@ function getMintFromToken(token?: string): PublicKey | undefined {
 }
 
 const MERKLE_DEPTH = 26;
-
-/** Build path (pathElements, pathIndices) for a leaf at leafIndex from DB commitments. Missing siblings returned as '0'. */
-async function getPathForLeafIndex(
-  db: ReturnType<typeof getDb>,
-  token: string,
-  leafIndex: number
-): Promise<{ pathElements: string[]; pathIndices: number[] }> {
-  const siblingIndices: number[] = [];
-  let index = leafIndex;
-  for (let level = 0; level < MERKLE_DEPTH; level++) {
-    siblingIndices.push(index ^ 1);
-    index = Math.floor(index / 2);
-  }
-  const { data: siblings } = await db
-    .from('commitments')
-    .select('commitment_index, commitment')
-    .eq('token', token)
-    .in('commitment_index', siblingIndices);
-  const byIndex = new Map<number, string>();
-  for (const s of siblings ?? []) {
-    byIndex.set(Number(s.commitment_index), s.commitment);
-  }
-  index = leafIndex;
-  const pathElements: string[] = [];
-  const pathIndices: number[] = [];
-  for (let level = 0; level < MERKLE_DEPTH; level++) {
-    const siblingIndex = index ^ 1;
-    pathIndices.push(index % 2);
-    pathElements.push(byIndex.get(siblingIndex) ?? '0');
-    index = Math.floor(index / 2);
-  }
-  return { pathElements, pathIndices };
-}
 
 router.get('/root', async (req: Request<object, object, object, { token?: string }>, res) => {
   try {
@@ -112,8 +79,14 @@ router.get('/path', async (req: Request<object, object, object, { token?: string
     if (!Number.isInteger(leafIndex) || leafIndex < 0 || leafIndex >= 2 ** MERKLE_DEPTH) {
       return res.status(400).json({ error: 'Invalid leafIndex; use 0 to ' + (2 ** MERKLE_DEPTH - 1) });
     }
-    const db = getDb();
-    const rootData = await fetchMerkleTreeState(getMintFromToken(token));
+    const mint = getMintFromToken(token);
+    const [rootData, commitmentsRows] = await Promise.all([
+      fetchMerkleTreeState(mint),
+      Commitment.find({ token })
+        .select('commitment_index commitment')
+        .sort({ commitment_index: 1 })
+        .lean(),
+    ]);
     if (rootData === null) {
       return res.status(404).json({
         error: 'Merkle tree not initialized for this token',
@@ -121,12 +94,7 @@ router.get('/path', async (req: Request<object, object, object, { token?: string
         token,
       });
     }
-    const { data: commitmentsRows } = await db
-      .from('commitments')
-      .select('commitment_index, commitment')
-      .eq('token', token)
-      .order('commitment_index', { ascending: true });
-    const commitments = (commitmentsRows ?? []).map((r) => ({
+    const commitments = commitmentsRows.map((r) => ({
       commitment_index: Number(r.commitment_index),
       commitment: r.commitment as string,
     }));
@@ -157,14 +125,9 @@ router.get('/proof/:commitment', async (req: Request<{ commitment: string }, obj
       return res.status(400).json({ error: 'Invalid commitment' });
     }
 
-    const db = getDb();
-
-    const { data: commitmentRow } = await db
-      .from('commitments')
+    const commitmentRow = await Commitment.findOne({ commitment, token })
       .select('commitment_index')
-      .eq('commitment', commitment)
-      .eq('token', token)
-      .maybeSingle();
+      .lean();
 
     if (!commitmentRow) {
       return res.status(404).json({
@@ -174,7 +137,14 @@ router.get('/proof/:commitment', async (req: Request<{ commitment: string }, obj
     }
 
     const leafIndex = Number(commitmentRow.commitment_index);
-    const rootData = await fetchMerkleTreeState(getMintFromToken(token));
+    const mint = getMintFromToken(token);
+    const [rootData, commitmentsRowsProof] = await Promise.all([
+      fetchMerkleTreeState(mint),
+      Commitment.find({ token })
+        .select('commitment_index commitment')
+        .sort({ commitment_index: 1 })
+        .lean(),
+    ]);
     if (rootData === null) {
       return res.status(404).json({
         error: 'Merkle tree not initialized for this token',
@@ -183,12 +153,7 @@ router.get('/proof/:commitment', async (req: Request<{ commitment: string }, obj
       });
     }
 
-    const { data: commitmentsRows } = await db
-      .from('commitments')
-      .select('commitment_index, commitment')
-      .eq('token', token)
-      .order('commitment_index', { ascending: true });
-    const commitments = (commitmentsRows ?? []).map((r) => ({
+    const commitments = commitmentsRowsProof.map((r) => ({
       commitment_index: Number(r.commitment_index),
       commitment: r.commitment as string,
     }));

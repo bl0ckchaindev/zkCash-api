@@ -1,30 +1,11 @@
 import { PublicKey } from '@solana/web3.js';
 import { getConnection } from './connection.js';
 import { config } from '../config/env.js';
+
 const MERKLE_TREE_SEED = Buffer.from('merkle_tree');
 const GLOBAL_CONFIG_SEED = Buffer.from('global_config');
-const SOL_MINT = new PublicKey('11111111111111111111111111111111');
 
-interface GlobalConfigLayout {
-  authority: Uint8Array;
-  depositFeeRate: number;
-  withdrawalFeeRate: number;
-  feeErrorMargin: number;
-  bump: number;
-}
-
-interface MerkleTreeAccountLayout {
-  authority: Uint8Array;
-  nextIndex: bigint;
-  root: Uint8Array;
-  rootIndex: bigint;
-  maxDepositAmount: bigint;
-  height: number;
-  rootHistorySize: number;
-  bump: number;
-}
-
-export function getTreeAccountPDA(mint?: PublicKey): PublicKey {
+function getTreeAccountPDA(mint?: PublicKey): PublicKey {
   const seeds = mint
     ? [MERKLE_TREE_SEED, mint.toBuffer()]
     : [MERKLE_TREE_SEED];
@@ -32,7 +13,7 @@ export function getTreeAccountPDA(mint?: PublicKey): PublicKey {
   return pda;
 }
 
-export function getGlobalConfigPDA(): PublicKey {
+function getGlobalConfigPDA(): PublicKey {
   const [pda] = PublicKey.findProgramAddressSync([GLOBAL_CONFIG_SEED], config.programId);
   return pda;
 }
@@ -59,7 +40,7 @@ export async function fetchGlobalConfig(): Promise<{
 }
 
 /**
- * Merkle tree account layout (Shade program lib.rs MerkleTreeAccount, #[account(zero_copy)]).
+ * Merkle tree account layout (ZKCash program lib.rs MerkleTreeAccount, #[account(zero_copy)]).
  * Anchor writes 8-byte discriminator then the struct (space = 8 + size_of::<MerkleTreeAccount>()).
  * We read root from root_history[root_index] so we return the exact 32 bytes the program compares in is_known_root().
  */
@@ -82,7 +63,7 @@ function bytes32ToDecimalString(buf: Buffer): string {
   return BigInt('0x' + Buffer.from(buf).toString('hex')).toString(10);
 }
 
-export type MerkleTreeState = {
+type MerkleTreeState = {
   root: string;
   nextIndex: number;
   subtrees: string[];

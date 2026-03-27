@@ -1,6 +1,6 @@
-# Shade API
+# ZKCash API
 
-Backend API for the Shade privacy protocol. Bridges the [Shade smart contracts](../shade) with the [privacy-cash-sdk](../privacy-cash-sdk) frontend, providing:
+Backend API for the ZKCash privacy protocol. Bridges the [ZKCash smart contracts](../zkcash) with the [privacy-cash-sdk](../privacy-cash-sdk) frontend, providing:
 
 - **Config** – On-chain fee rates and rent fees
 - **Merkle** – Root and proof lookups for UTXO inclusion
@@ -12,11 +12,12 @@ Backend API for the Shade privacy protocol. Bridges the [Shade smart contracts](
 - Node.js 18+
 - Solana CLI (for relayer keypair)
 - RPC endpoint (devnet/mainnet)
+- MongoDB 6+ (local, Atlas, or compatible)
 
 ## Setup
 
 ```bash
-cd shade-api
+cd zkcash-api
 npm install
 cp .env.example .env
 ```
@@ -25,31 +26,24 @@ Edit `.env`:
 
 ```env
 RPC_URL=https://api.devnet.solana.com
-PROGRAM_ID=49JYv2nPJK4XQ9mK1TVGNGcF26KtuwQobrKtghkxvqHq
+PROGRAM_ID=9B3yaayBtBaJspPQ3ggkN31By3a3qjRZtJEmCgtogqAt
 ALT_ADDRESS=HEN49U2ySJ85Vc78qprSW9y6mFDhs1NczRxyppNHjofe
 FEE_RECIPIENT=AWexibGxNFKTa1b5R5MN4PJr9HWnWRwf8EW9g8cLx3dM
 PORT=3001
 
-# Supabase (PostgreSQL) - create project at https://supabase.com
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+# MongoDB (database name in URI path)
+MONGODB_URI=mongodb://localhost:27017/zkcash
 ```
 
-**Database setup:** Run the schema in `supabase/migrations/001_initial_schema.sql` in your Supabase project's SQL Editor.
+**Database:** [Mongoose](https://mongoosejs.com/) connects on startup and ensures indexes on the `commitments` collection (unique `commitment`, compound `token` + `commitment_index`, etc.).
 
 ## Running
-
-**API server:**
 
 ```bash
 npm run dev
 ```
 
-**Indexer (separate process, indexes CommitmentData/SplCommitmentData events):**
-
-```bash
-npm run index
-```
+The event indexer (CommitmentData / SplCommitmentData) starts automatically with the API server.
 
 ## API Endpoints
 
@@ -98,16 +92,14 @@ The privacy-cash-sdk may need a small update to:
 ## Project Structure
 
 ```
-shade-api/
+zkcash-api/
 ├── src/
 │   ├── config/     # Env config
-│   ├── db/         # Supabase client for UTXO index
+│   ├── db/         # Mongoose models (commitments)
 │   ├── solana/     # Connection, contract state
 │   ├── routes/     # Express route handlers
 │   ├── indexer/    # Event indexer (CommitmentData, SplCommitmentData)
 │   └── index.ts    # Express app entry
-├── supabase/
-│   └── migrations/ # Schema SQL (run in Supabase SQL Editor)
 └── package.json
 ```
 
@@ -115,13 +107,13 @@ shade-api/
 
 ```
 ┌─────────────────────┐     ┌──────────────┐     ┌─────────────────────┐
-│  privacy-cash-sdk   │────▶│   Shade API  │────▶│  Shade Program      │
+│  privacy-cash-sdk   │────▶│  ZKCash API  │────▶│  ZKCash Program     │
 │  (frontend)         │     │  (this)      │     │  (Solana)           │
 └─────────────────────┘     └──────────────┘     └─────────────────────┘
         │                            │
         │                            ▼
         │                    ┌──────────────┐
-        └───────────────────│  Supabase    │
-                            │  (PostgreSQL)│
+        └───────────────────│   MongoDB    │
+                            │ (commitments)│
                             └──────────────┘
 ```

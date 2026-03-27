@@ -1,5 +1,5 @@
 import { Router, Request } from 'express';
-import { getDb } from '../db/index.js';
+import { Commitment } from '../db/index.js';
 import { sanitizeToken, clampInt, isValidEncryptedOutput } from '../lib/validators.js';
 
 const router = Router();
@@ -18,22 +18,16 @@ router.get(
       const start = clampInt(req.query.start, 0, 0, Number.MAX_SAFE_INTEGER);
       const end = clampInt(req.query.end, 20000, start, start + MAX_RANGE_SIZE);
 
-      const db = getDb();
-
-      const [{ count: totalCount }, { data: rows }] = await Promise.all([
-        db.from('commitments').select('*', { count: 'exact', head: true }).eq('token', token),
-        db
-          .from('commitments')
-          .select('commitment_index, commitment, encrypted_output')
-          .eq('token', token)
-          .gte('commitment_index', start)
-          .lt('commitment_index', end)
-          .order('commitment_index', { ascending: true })
-          .limit(MAX_RANGE_SIZE),
+      const [total, rows] = await Promise.all([
+        Commitment.countDocuments({ token }),
+        Commitment.find({ token, commitment_index: { $gte: start, $lt: end } })
+          .select('commitment_index commitment encrypted_output')
+          .sort({ commitment_index: 1 })
+          .limit(MAX_RANGE_SIZE)
+          .lean(),
       ]);
 
-      const total = totalCount ?? 0;
-      const list = rows ?? [];
+      const list = rows;
       // Only include non-empty encrypted_output so clients get decryptable entries
       const encrypted_outputs = list
         .map((r) => (r as { encrypted_output?: string | null }).encrypted_output)
@@ -70,13 +64,9 @@ router.get('/check/:encryptedOutput', async (req: Request<{ encryptedOutput: str
       return res.status(400).json({ error: 'Invalid encrypted output' });
     }
 
-    const db = getDb();
-    const { data: row } = await db
-      .from('commitments')
-      .select('id')
-      .eq('encrypted_output', encryptedOutput)
-      .eq('token', token)
-      .maybeSingle();
+    const row = await Commitment.findOne({ encrypted_output: encryptedOutput, token })
+      .select('_id')
+      .lean();
 
     res.json({ exists: !!row });
   } catch (error) {
@@ -102,18 +92,12 @@ router.post('/indices', async (req, res) => {
     }
 
     const token = sanitizeToken(bodyToken);
-    const db = getDb();
-
-    let query = db
-      .from('commitments')
-      .select('encrypted_output, commitment_index')
-      .eq('token', token)
-      .in('encrypted_output', valid);
-
-    const { data: rows } = await query;
+    const rows = await Commitment.find({ token, encrypted_output: { $in: valid } })
+      .select('encrypted_output commitment_index')
+      .lean();
 
     const byEnc = new Map<string, number>();
-    for (const r of rows ?? []) {
+    for (const r of rows) {
       byEnc.set(r.encrypted_output, r.commitment_index);
     }
 

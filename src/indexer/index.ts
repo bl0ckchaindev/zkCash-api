@@ -1,14 +1,14 @@
 /**
- * Shade program event indexer.
- * Uses connection.onLogs() to subscribe to program logs and writes CommitmentData to the commitments table.
- * Anchor events are logged as base64(discriminator[8] + borsh(fields)). We match the discriminator
- * so commitment and encrypted_output are read from the correct layout (SOL vs SPL).
+ * ZKCash program event indexer.
+ * Uses connection.onLogs() for low-latency updates plus periodic HTTP reconciliation of recent signatures.
+ * WebSocket delivery is best-effort; overlapping HTTP scans close gaps from reconnects, RPC drops, or missed notifications.
+ * Inserts are idempotent ($setOnInsert on commitment) so duplicate paths are safe.
  */
 import { createHash } from 'crypto';
 import { PublicKey } from '@solana/web3.js';
 import { getConnection } from '../solana/connection.js';
 import { config } from '../config/env.js';
-import { getDb } from '../db/index.js';
+import { Commitment } from '../db/index.js';
 
 /** Anchor event discriminator = first 8 bytes of sha256("event:EventName"). */
 function eventDiscriminator(eventName: string): Buffer {
@@ -156,32 +156,113 @@ async function indexLogs(logLines: string[], transactionSignature: string): Prom
   const rows = processLogLines(logLines, transactionSignature);
   if (rows.length === 0) return;
 
+  const deduped = [...new Map(rows.map((r) => [r.commitment, r])).values()];
+
   try {
-    const db = getDb();
-    await db.from('commitments').upsert(rows, { onConflict: 'commitment', ignoreDuplicates: true });
+    await Commitment.bulkWrite(
+      deduped.map((row) => ({
+        updateOne: {
+          filter: { commitment: row.commitment },
+          update: {
+            $setOnInsert: {
+              token: row.token,
+              commitment_index: row.commitment_index,
+              commitment: row.commitment,
+              encrypted_output: row.encrypted_output,
+              mint_address: row.mint_address,
+              transaction_signature: row.transaction_signature,
+            },
+          },
+          upsert: true,
+        },
+      })),
+      { ordered: false }
+    );
   } catch (e) {
     console.error('Indexer insert error:', e);
   }
 }
 
-const CATCH_UP_LIMIT = 50;
+/** Solana RPC max per getSignaturesForAddress page. */
+const SIGNATURE_PAGE_SIZE = 1000;
 const RESUBSCRIBE_DELAY_MS = 5000;
+const GET_TX_ATTEMPTS = 4;
+const GET_TX_RETRY_BASE_MS = 400;
 
-/**
- * Run a one-time catch-up: fetch recent signatures and index any commitments from their logs.
- * Use after startup to pick up txs that landed while the server was down.
- */
-async function catchUpOnce(): Promise<void> {
-  const connection = getConnection();
-  try {
-    const sigs = await connection.getSignaturesForAddress(config.programId, { limit: CATCH_UP_LIMIT });
-    for (const sigInfo of sigs) {
-      const tx = await connection.getParsedTransaction(sigInfo.signature, {
+let fullCatchUpInFlight = false;
+let reconcileInFlight = false;
+
+async function fetchParsedTransactionLogged(connection: ReturnType<typeof getConnection>, signature: string) {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < GET_TX_ATTEMPTS; attempt++) {
+    try {
+      return await connection.getParsedTransaction(signature, {
         maxSupportedTransactionVersion: 0,
       });
-      if (tx?.meta?.logMessages?.length) {
-        await indexLogs(tx.meta.logMessages, sigInfo.signature);
+    } catch (e) {
+      lastErr = e;
+      await new Promise((r) => setTimeout(r, GET_TX_RETRY_BASE_MS * (attempt + 1)));
+    }
+  }
+  console.error(`Indexer: getParsedTransaction failed after ${GET_TX_ATTEMPTS} tries:`, signature, lastErr);
+  return null;
+}
+
+async function indexSignatures(connection: ReturnType<typeof getConnection>, signatures: string[]): Promise<void> {
+  for (const signature of signatures) {
+    const tx = await fetchParsedTransactionLogged(connection, signature);
+    if (tx?.meta?.logMessages?.length) {
+      await indexLogs(tx.meta.logMessages, signature);
+    }
+  }
+}
+
+async function catchUpFullGuarded(): Promise<void> {
+  if (fullCatchUpInFlight) return;
+  fullCatchUpInFlight = true;
+  try {
+    await catchUpFullHistory();
+  } finally {
+    fullCatchUpInFlight = false;
+  }
+}
+
+async function reconcileRecentGuarded(): Promise<void> {
+  if (reconcileInFlight) return;
+  reconcileInFlight = true;
+  try {
+    await reconcileRecentSignatures();
+  } finally {
+    reconcileInFlight = false;
+  }
+}
+
+/** Paginate from newest until chain history for this program is exhausted (startup backfill). */
+async function catchUpFullHistory(): Promise<void> {
+  const connection = getConnection();
+  let before: string | undefined;
+  let page = 0;
+
+  try {
+    for (;;) {
+      const sigs = await connection.getSignaturesForAddress(config.programId, {
+        limit: SIGNATURE_PAGE_SIZE,
+        before,
+      });
+      if (sigs.length === 0) break;
+
+      page += 1;
+      if (page === 1 || page % 10 === 0) {
+        console.log(`ZKCash indexer: catch-up page ${page} (${sigs.length} signatures, before=${before ?? 'head'})`);
       }
+
+      await indexSignatures(
+        connection,
+        sigs.map((s) => s.signature)
+      );
+
+      before = sigs[sigs.length - 1]!.signature;
+      if (sigs.length < SIGNATURE_PAGE_SIZE) break;
     }
   } catch (e) {
     console.error('Indexer catch-up error:', e);
@@ -189,21 +270,71 @@ async function catchUpOnce(): Promise<void> {
 }
 
 /**
- * Start the indexer: optional catch-up, then subscribe to program logs via connection.onLogs().
+ * Walk recent signatures (newest first) up to indexerReconcileSignatureCap — backup path when WS misses txs.
+ */
+async function reconcileRecentSignatures(): Promise<void> {
+  const connection = getConnection();
+  const cap = config.indexerReconcileSignatureCap;
+  let before: string | undefined;
+  let fetched = 0;
+
+  try {
+    while (fetched < cap) {
+      const chunk = Math.min(SIGNATURE_PAGE_SIZE, cap - fetched);
+      const sigs = await connection.getSignaturesForAddress(config.programId, {
+        limit: chunk,
+        before,
+      });
+      if (sigs.length === 0) break;
+
+      await indexSignatures(
+        connection,
+        sigs.map((s) => s.signature)
+      );
+
+      fetched += sigs.length;
+      before = sigs[sigs.length - 1]!.signature;
+      if (sigs.length < chunk) break;
+    }
+  } catch (e) {
+    console.error('Indexer reconcile error:', e);
+  }
+}
+
+/**
+ * Start the indexer: subscribe to logs immediately, run full history backfill in parallel, and reconcile on an interval.
  * Call this when the backend starts (e.g. after app.listen).
  */
 export function startIndexer(): void {
   const connection = getConnection();
 
-  console.log('Shade indexer: starting (logs subscription)...');
+  console.log('ZKCash indexer: starting (WS + HTTP reconcile)...');
 
-  catchUpOnce()
+  catchUpFullGuarded()
     .then(() => {
-      console.log('Shade indexer: catch-up done, subscribing to program logs.');
+      console.log('ZKCash indexer: full history catch-up done.');
     })
     .catch((e) => {
-      console.error('Shade indexer: catch-up failed:', e);
+      console.error('ZKCash indexer: full catch-up failed:', e);
     });
+
+  const pollMs = config.indexerHttpPollMs;
+  if (pollMs > 0) {
+    const runReconcile = () => {
+      reconcileRecentGuarded().catch((e) => {
+        console.error('ZKCash indexer: reconcile error:', e);
+      });
+    };
+    setTimeout(runReconcile, 2000);
+    setInterval(runReconcile, pollMs);
+    console.log(
+      `ZKCash indexer: HTTP reconcile every ${pollMs}ms, up to ${config.indexerReconcileSignatureCap} sigs/tick (INDEXER_HTTP_POLL_MS, INDEXER_RECONCILE_SIGNATURE_CAP)`
+    );
+  } else {
+    console.warn(
+      'ZKCash indexer: INDEXER_HTTP_POLL_MS=0 — only WebSocket logs; missed notifications will not be repaired until restart.'
+    );
+  }
 
   const subscribe = (): void => {
     try {
@@ -219,9 +350,9 @@ export function startIndexer(): void {
         },
         'confirmed'
       );
-      console.log('Shade indexer: subscribed to program logs (confirmed).');
+      console.log('ZKCash indexer: subscribed to program logs (confirmed).');
     } catch (e) {
-      console.error('Shade indexer: subscribe error, resubscribing in', RESUBSCRIBE_DELAY_MS, 'ms:', e);
+      console.error('ZKCash indexer: subscribe error, resubscribing in', RESUBSCRIBE_DELAY_MS, 'ms:', e);
       setTimeout(subscribe, RESUBSCRIBE_DELAY_MS);
     }
   };

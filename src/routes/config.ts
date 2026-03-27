@@ -5,7 +5,7 @@ import { createCache } from '../lib/cache.js';
 
 const router = Router();
 
-export interface ConfigResponse {
+interface ConfigResponse {
   withdraw_fee_rate: number;
   withdraw_rent_fee: number;
   deposit_fee_rate: number;
@@ -25,25 +25,17 @@ const TOKEN_RENT_FEES: Record<string, number> = {
   store: 0.002,
 };
 
-export async function getConfigResponse(): Promise<ConfigResponse> {
+async function getConfigResponse(): Promise<ConfigResponse> {
   const cached = configCache.get('global');
   if (cached) return cached;
 
   const { depositFeeRate, withdrawalFeeRate } = await fetchGlobalConfig();
-  const withdrawFeeRate = withdrawalFeeRate / 10000;
-  const depositFeeRateVal = depositFeeRate / 10000;
-
-  const rentFees: Record<string, number> = {};
-  for (const [token, fee] of Object.entries(TOKEN_RENT_FEES)) {
-    rentFees[token] = fee;
-  }
-
-  const data = {
-    withdraw_fee_rate: withdrawFeeRate,
+  const data: ConfigResponse = {
+    withdraw_fee_rate: withdrawalFeeRate / 10000,
     withdraw_rent_fee: TOKEN_RENT_FEES.sol,
-    deposit_fee_rate: depositFeeRateVal,
+    deposit_fee_rate: depositFeeRate / 10000,
     usdc_withdraw_rent_fee: TOKEN_RENT_FEES.usdc,
-    rent_fees: rentFees,
+    rent_fees: { ...TOKEN_RENT_FEES },
   };
   configCache.set('global', data);
   return data;

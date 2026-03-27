@@ -2,7 +2,6 @@ import { Router } from 'express';
 import { VersionedTransaction } from '@solana/web3.js';
 import { getConnection } from '../solana/connection.js';
 import { isValidBase64, isValidSolanaAddress } from '../lib/validators.js';
-import { send } from 'process';
 
 const router = Router();
 const MAX_TX_SIZE = 1232;
@@ -11,7 +10,6 @@ interface DepositSplRequestBody {
   signedTransaction?: string;
   senderAddress?: string;
   mintAddress?: string;
-  referralWalletAddress?: string;
 }
 
 router.post('/', async (req, res) => {

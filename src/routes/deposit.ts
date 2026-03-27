@@ -12,7 +12,6 @@ const MAX_TX_SIZE = 1232;
 interface DepositRequestBody {
   signedTransaction?: string;
   senderAddress?: string;
-  referralWalletAddress?: string;
 }
 
 router.post('/', async (req, res) => {

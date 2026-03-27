@@ -7,7 +7,9 @@ let relayerKeypair: Keypair | null = null;
 
 export function getConnection(): Connection {
   if (!connection) {
-    connection = new Connection(config.rpcUrl);
+    connection = config.rpcWsUrl
+      ? new Connection(config.rpcUrl, { wsEndpoint: config.rpcWsUrl })
+      : new Connection(config.rpcUrl);
   }
   return connection;
 }
