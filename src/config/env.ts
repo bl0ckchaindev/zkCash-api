@@ -25,9 +25,9 @@ export const config = {
     Math.max(50, parseInt(process.env.INDEXER_RECONCILE_SIGNATURE_CAP ?? '1000', 10))
   ),
   isDevnet,
-  programId: new PublicKey(process.env.PROGRAM_ID ?? '9B3yaayBtBaJspPQ3ggkN31By3a3qjRZtJEmCgtogqAt'),
+  programId: new PublicKey(process.env.PROGRAM_ID ?? 'HNsBuwraQWZ2hNtpnbdvdSANVUavbMwUBBPy6gs4JetY'),
   relayerKeypairPath: process.env.RELAYER_KEYPAIR_PATH ?? './relayer-keypair.json',
-  altAddress: new PublicKey(process.env.ALT_ADDRESS ?? '2sJovo7nMgU6ErmFAQzBqanWb7EAZV9P8sbgWjVkS45g'),
+  altAddress: new PublicKey(process.env.ALT_ADDRESS ?? 'HAcWrB5z8METevQcCCtXfVTQyGFnyqW3zG7gqUVkH9To'),
   feeRecipient: new PublicKey(process.env.FEE_RECIPIENT ?? 'FEdh2nUJmEntEme72jq9jB2ZGUfNdsL1NEz2zM8y3aPx'),
   port: parseInt(process.env.PORT ?? '3001', 10),
   mongodbUri: process.env.MONGODB_URI ?? '',

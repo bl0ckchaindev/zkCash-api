@@ -26,7 +26,7 @@ Edit `.env`:
 
 ```env
 RPC_URL=https://api.devnet.solana.com
-PROGRAM_ID=9B3yaayBtBaJspPQ3ggkN31By3a3qjRZtJEmCgtogqAt
+PROGRAM_ID=HNsBuwraQWZ2hNtpnbdvdSANVUavbMwUBBPy6gs4JetY
 ALT_ADDRESS=HEN49U2ySJ85Vc78qprSW9y6mFDhs1NczRxyppNHjofe
 FEE_RECIPIENT=AWexibGxNFKTa1b5R5MN4PJr9HWnWRwf8EW9g8cLx3dM
 PORT=3001

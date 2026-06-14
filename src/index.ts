@@ -62,7 +62,7 @@ async function main(): Promise<void> {
 
   app.use(safeErrorHandler);
 
-  app.listen(config.port, () => {
+  app.listen(config.port, '0.0.0.0', () => {
     console.log(`ZKCash API running at http://localhost:${config.port}`);
     console.log('Endpoints:');
     console.log('  GET  /health       (includes DB connection check)');
